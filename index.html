@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#e8edf1" />
+    <meta name="description" content="一个可用鼠标和触控操作的 3D 网页魔方。" />
+    <link rel="icon" href="data:," />
+    <title>CUBIO · 网页魔方</title>
+  </head>
+  <body>
+    <main class="app" id="app">
+      <div class="stage" id="stage" aria-label="可交互的三阶魔方"></div>
+
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="CUBIO 首页">
+          <span class="brand-mark" aria-hidden="true">
+            <i></i><i></i><i></i><i></i>
+          </span>
+          <span>CUBIO</span>
+        </a>
+
+        <div class="readouts" aria-live="polite">
+          <div class="readout">
+            <span>步数</span>
+            <strong id="move-count">000</strong>
+          </div>
+          <div class="readout readout-time">
+            <span>时间</span>
+            <strong id="timer">00:00</strong>
+          </div>
+        </div>
+
+        <div class="top-actions">
+          <button class="icon-button" id="hint-toggle" type="button" aria-label="开启新手提示" title="开启新手提示" aria-pressed="false">
+            <i data-lucide="lightbulb"></i>
+          </button>
+          <button class="icon-button" id="sound-toggle" type="button" aria-label="关闭声音" title="关闭声音">
+            <i data-lucide="volume-2"></i>
+          </button>
+        </div>
+      </header>
+
+      <div class="status-wrap">
+        <div class="status" id="status" data-tone="ready">
+          <span class="status-dot"></span>
+          <span id="status-text">准备就绪</span>
+        </div>
+      </div>
+
+      <section class="hint-panel" id="hint-panel" aria-live="polite" hidden>
+        <div class="hint-move">
+          <span>下一步</span>
+          <strong id="hint-notation">R</strong>
+        </div>
+        <div class="hint-copy">
+          <div class="hint-heading">
+            <span class="hint-direction" id="hint-direction-icon" aria-hidden="true">
+              <i data-lucide="rotate-cw"></i>
+            </span>
+            <strong id="hint-instruction">正在计算</strong>
+          </div>
+          <span id="hint-detail">读取当前魔方状态</span>
+        </div>
+      </section>
+
+      <section class="control-dock" aria-label="魔方控制">
+        <div class="scramble-length" aria-label="打乱步数">
+          <button class="step-button" id="steps-down" type="button" aria-label="减少打乱步数" title="减少打乱步数">
+            <i data-lucide="minus"></i>
+          </button>
+          <div class="step-value">
+            <strong id="scramble-steps">18</strong>
+            <span>步打乱</span>
+          </div>
+          <button class="step-button" id="steps-up" type="button" aria-label="增加打乱步数" title="增加打乱步数">
+            <i data-lucide="plus"></i>
+          </button>
+        </div>
+
+        <div class="dock-divider" aria-hidden="true"></div>
+
+        <button class="action-button action-primary" id="scramble" type="button">
+          <i data-lucide="shuffle"></i>
+          <span>自动打乱</span>
+        </button>
+        <button class="action-button" id="reset" type="button">
+          <i data-lucide="rotate-ccw"></i>
+          <span>自动复位</span>
+        </button>
+      </section>
+
+      <div class="gesture-cue" id="gesture-cue" aria-hidden="true">
+        <span class="gesture-line"></span>
+        <span class="gesture-hand"><i data-lucide="mouse-pointer-2"></i></span>
+      </div>
+
+      <div class="confetti" id="confetti" aria-hidden="true"></div>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
