@@ -7,12 +7,14 @@ import {
   Lightbulb,
   Minus,
   MousePointer2,
+  PackageOpen,
   Plus,
   RotateCcw,
   RotateCw,
   Shuffle,
   Volume2,
   VolumeX,
+  Wrench,
 } from 'lucide';
 import './style.css';
 
@@ -36,6 +38,8 @@ const stepsUpButton = document.querySelector('#steps-up');
 const scrambleStepsEl = document.querySelector('#scramble-steps');
 const gestureCue = document.querySelector('#gesture-cue');
 const confettiEl = document.querySelector('#confetti');
+const breakPanel = document.querySelector('#break-panel');
+const rebuildButton = document.querySelector('#rebuild');
 
 const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const GRID = 1.04;
@@ -77,7 +81,8 @@ function requestSolution() {
   });
 }
 
-createIcons({ icons: { Lightbulb, Minus, MousePointer2, Plus, RotateCcw, RotateCw, Shuffle, Volume2, VolumeX } });
+const ICONS = { Lightbulb, Minus, MousePointer2, PackageOpen, Plus, RotateCcw, RotateCw, Shuffle, Volume2, VolumeX, Wrench };
+createIcons({ icons: ICONS });
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0xe8edf1, 10, 22);
@@ -318,6 +323,14 @@ let hintTimer = null;
 let currentHintMove = null;
 let hintRevision = 0;
 let hintPlan = [];
+let cubeDestroyed = false;
+let reassembling = false;
+let explosionStartedAt = 0;
+let rebuildStartedAt = 0;
+let breakPanelTimer = null;
+let lastFrameTime = performance.now();
+let explosionImpactBudget = 0;
+const manualFrenzyMoves = [];
 
 function setPointerFromEvent(event) {
   const rect = renderer.domElement.getBoundingClientRect();
@@ -332,7 +345,7 @@ function dominantAxis(vector) {
 }
 
 function onPointerDown(event) {
-  if (event.button !== 0 || autoMode || turnInProgress || performance.now() < manualInputLockedUntil) return;
+  if (event.button !== 0 || autoMode || turnInProgress || cubeDestroyed || reassembling || performance.now() < manualInputLockedUntil) return;
   setPointerFromEvent(event);
   const hit = raycaster.intersectObjects(cubieBodies, false)[0];
 
@@ -501,7 +514,7 @@ const HINT_FACE_NAMES = {
 
 function setHintIcon(iconName) {
   hintDirectionIcon.innerHTML = `<i data-lucide="${iconName}"></i>`;
-  createIcons({ icons: { Lightbulb, RotateCcw, RotateCw } });
+  createIcons({ icons: ICONS });
 }
 
 function setHintMessage(notation, instruction, detail, iconName = 'lightbulb') {
@@ -700,6 +713,8 @@ function addTurnRing(axis, layer, direction) {
   );
   ring.userData.life = 1;
   ring.userData.spin = direction * 0.018;
+  ring.userData.kind = 'ring';
+  ring.userData.disposable = true;
   ring.position[axis] = layer * GRID;
   if (axis === 'x') ring.rotation.y = Math.PI / 2;
   if (axis === 'y') ring.rotation.x = Math.PI / 2;
@@ -712,6 +727,10 @@ const effectObjects = [];
 const sparkGeometry = new THREE.IcosahedronGeometry(0.035, 0);
 const sparkMaterials = [0xff5746, 0xf5c842, 0x3474f4, 0x12b8a5].map(
   (color) => new THREE.MeshBasicMaterial({ color, transparent: true })
+);
+const debrisGeometry = new THREE.TetrahedronGeometry(0.075, 0);
+const debrisMaterials = [0x111820, 0xff5746, 0xf5c842, 0x3474f4, 0x12b8a5, 0xffffff].map(
+  (color) => new THREE.MeshStandardMaterial({ color, roughness: 0.44, transparent: true })
 );
 
 function emitSparks(axis, layer) {
@@ -727,13 +746,199 @@ function emitSparks(axis, layer) {
     const outward = spark.position.clone().normalize().multiplyScalar(THREE.MathUtils.randFloat(0.015, 0.035));
     spark.userData.velocity = outward;
     spark.userData.life = 1;
+    spark.userData.kind = 'spark';
     cubeRoot.add(spark);
     effectObjects.push(spark);
   }
 }
 
+function emitExplosionDebris() {
+  if (prefersReducedMotion) return;
+
+  for (let i = 0; i < 58; i += 1) {
+    const sourceCubie = cubies[Math.floor(Math.random() * cubies.length)];
+    const shard = new THREE.Mesh(debrisGeometry, debrisMaterials[i % debrisMaterials.length]);
+    shard.position.copy(sourceCubie.position).multiplyScalar(0.82);
+    shard.position.add(new THREE.Vector3(
+      THREE.MathUtils.randFloatSpread(0.24),
+      THREE.MathUtils.randFloatSpread(0.24),
+      THREE.MathUtils.randFloatSpread(0.24)
+    ));
+    const outward = shard.position.lengthSq() > 0.01
+      ? shard.position.clone().normalize()
+      : new THREE.Vector3(THREE.MathUtils.randFloatSpread(1), 0.4, THREE.MathUtils.randFloatSpread(1)).normalize();
+    outward.y += THREE.MathUtils.randFloat(0.06, 0.5);
+    shard.userData.velocity = outward.normalize().multiplyScalar(THREE.MathUtils.randFloat(3.2, 7.8));
+    shard.userData.angularVelocity = new THREE.Vector3(
+      THREE.MathUtils.randFloatSpread(12),
+      THREE.MathUtils.randFloatSpread(12),
+      THREE.MathUtils.randFloatSpread(12)
+    );
+    shard.userData.life = THREE.MathUtils.randFloat(0.7, 1);
+    shard.userData.decay = THREE.MathUtils.randFloat(0.42, 0.62);
+    shard.userData.kind = 'debris';
+    shard.scale.setScalar(THREE.MathUtils.randFloat(0.5, 1.25));
+    cubeRoot.add(shard);
+    effectObjects.push(shard);
+  }
+
+  AXES.forEach((axis, index) => {
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(1.48 + index * 0.08, 0.025, 8, 96),
+      new THREE.MeshBasicMaterial({
+        color: [0xff5746, 0xf5c842, 0x3474f4][index],
+        transparent: true,
+        opacity: 0.82,
+        depthWrite: false,
+      })
+    );
+    if (axis === 'x') ring.rotation.y = Math.PI / 2;
+    if (axis === 'y') ring.rotation.x = Math.PI / 2;
+    ring.userData.kind = 'shockwave';
+    ring.userData.life = 1;
+    ring.userData.decay = 1.4 + index * 0.12;
+    ring.userData.growth = 2.4 + index * 0.35;
+    ring.userData.disposable = true;
+    cubeRoot.add(ring);
+    effectObjects.push(ring);
+  });
+}
+
+function recordManualFrenzy(move, now = performance.now()) {
+  manualFrenzyMoves.push({
+    time: now,
+    axis: move.axis,
+    layer: move.layer,
+    direction: move.direction,
+  });
+
+  while (manualFrenzyMoves.length && now - manualFrenzyMoves[0].time > 4600) {
+    manualFrenzyMoves.shift();
+  }
+
+  let sequenceStart = manualFrenzyMoves.length - 1;
+  while (
+    sequenceStart > 0
+    && manualFrenzyMoves[sequenceStart].time - manualFrenzyMoves[sequenceStart - 1].time <= 650
+  ) {
+    sequenceStart -= 1;
+  }
+  const sequence = manualFrenzyMoves.slice(sequenceStart);
+  if (sequence.length < 10 || now - sequence[0].time < 4000) return false;
+
+  const axes = new Set(sequence.map((item) => item.axis));
+  const faces = new Set(sequence.map((item) => `${item.axis}:${item.layer}`));
+  let directionChanges = 0;
+  for (let i = 1; i < sequence.length; i += 1) {
+    if (sequence[i].direction !== sequence[i - 1].direction) directionChanges += 1;
+  }
+
+  return axes.size >= 2 && faces.size >= 4 && directionChanges >= 3;
+}
+
+function triggerCubeExplosion() {
+  if (cubeDestroyed || reassembling) return;
+  cubeDestroyed = true;
+  timerRunning = false;
+  manualFrenzyMoves.length = 0;
+  explosionStartedAt = performance.now() + (prefersReducedMotion ? 0 : 105);
+  explosionImpactBudget = prefersReducedMotion ? 0 : 8;
+  appEl.dataset.destroyed = 'true';
+  controls.enabled = false;
+  hintGeneration += 1;
+  hintPanel.hidden = true;
+  hideHintGuide();
+  updateControlsDisabled();
+  setStatus('结构崩解', 'broken');
+
+  cubies.forEach((cubie) => {
+    const radial = cubie.position.lengthSq() > 0.01
+      ? cubie.position.clone().normalize()
+      : new THREE.Vector3(THREE.MathUtils.randFloatSpread(1), 0.55, THREE.MathUtils.randFloatSpread(1)).normalize();
+    radial.x += THREE.MathUtils.randFloatSpread(0.34);
+    radial.y += THREE.MathUtils.randFloat(0.08, 0.52);
+    radial.z += THREE.MathUtils.randFloatSpread(0.34);
+    cubie.userData.explosion = {
+      originPosition: cubie.position.clone(),
+      originQuaternion: cubie.quaternion.clone(),
+      velocity: radial.normalize().multiplyScalar(THREE.MathUtils.randFloat(3.7, 6.4)),
+      angularVelocity: new THREE.Vector3(
+        THREE.MathUtils.randFloatSpread(10),
+        THREE.MathUtils.randFloatSpread(10),
+        THREE.MathUtils.randFloatSpread(10)
+      ),
+      delay: THREE.MathUtils.randFloat(0, 0.085),
+      launched: false,
+      settled: false,
+    };
+  });
+
+  emitExplosionDebris();
+  playCubeExplosionSound();
+  if (!prefersReducedMotion) {
+    stage.animate(
+      [
+        { transform: 'translate3d(0, 0, 0)' },
+        { transform: 'translate3d(-7px, 3px, 0)' },
+        { transform: 'translate3d(6px, -4px, 0)' },
+        { transform: 'translate3d(-4px, -2px, 0)' },
+        { transform: 'translate3d(3px, 2px, 0)' },
+        { transform: 'translate3d(0, 0, 0)' },
+      ],
+      { duration: 520, easing: 'cubic-bezier(0.18, 0.72, 0.24, 1)' }
+    );
+  }
+
+  window.clearTimeout(breakPanelTimer);
+  breakPanelTimer = window.setTimeout(() => {
+    breakPanel.hidden = false;
+    requestAnimationFrame(() => breakPanel.classList.add('is-visible'));
+  }, prefersReducedMotion ? 0 : 620);
+}
+
+function finishReassembly() {
+  cubies.forEach((cubie) => {
+    const data = cubie.userData.explosion;
+    cubie.position.copy(data.originPosition);
+    cubie.quaternion.copy(data.originQuaternion);
+    cubie.scale.setScalar(1);
+    delete cubie.userData.explosion;
+    delete cubie.userData.rebuildFrom;
+  });
+  cubeRoot.scale.setScalar(1);
+  cubeDestroyed = false;
+  reassembling = false;
+  appEl.dataset.destroyed = 'false';
+  rebuildButton.disabled = false;
+  controls.enabled = true;
+  updateControlsDisabled();
+  setStatus(isSolved() ? '完成复原' : '重新组装完成', isSolved() ? 'solved' : 'ready');
+  restoreMusicLevel();
+  scheduleHintUpdate(260);
+}
+
+function reassembleCube() {
+  if (!cubeDestroyed || reassembling) return;
+  reassembling = true;
+  rebuildStartedAt = performance.now();
+  rebuildButton.disabled = true;
+  setStatus('正在重新组装', 'busy');
+  breakPanel.classList.remove('is-visible');
+  window.setTimeout(() => {
+    if (reassembling) breakPanel.hidden = true;
+  }, prefersReducedMotion ? 0 : 260);
+  playReassemblySound();
+  cubies.forEach((cubie, index) => {
+    cubie.userData.rebuildFrom = {
+      position: cubie.position.clone(),
+      quaternion: cubie.quaternion.clone(),
+      delay: prefersReducedMotion ? 0 : (index % 9) * 0.026 + Math.floor(index / 9) * 0.04,
+    };
+  });
+}
+
 function performMove(move, options = {}) {
-  if (turnInProgress) return Promise.resolve(false);
+  if (turnInProgress || cubeDestroyed || reassembling) return Promise.resolve(false);
   const { record = true, trackState = true, duration = 280, source = 'manual' } = options;
   const actualDuration = prefersReducedMotion ? 40 : duration;
   turnInProgress = true;
@@ -793,6 +998,11 @@ function performMove(move, options = {}) {
 
       turnInProgress = false;
       updateControlsDisabled();
+      if (source === 'manual' && !autoMode && recordManualFrenzy(move)) {
+        triggerCubeExplosion();
+        resolve(true);
+        return;
+      }
       if (!autoMode) {
         const solved = isSolved();
         setStatus(solved ? '完成复原' : '继续挑战', solved ? 'solved' : 'ready');
@@ -827,7 +1037,8 @@ function randomMoves(count) {
 }
 
 async function scrambleCube() {
-  if (autoMode || turnInProgress) return;
+  if (autoMode || turnInProgress || cubeDestroyed || reassembling) return;
+  manualFrenzyMoves.length = 0;
   hasInteracted = true;
   gestureCue.classList.remove('show');
   ensureAudio();
@@ -856,7 +1067,7 @@ async function scrambleCube() {
 }
 
 async function resetCube(announce = true) {
-  if (autoMode || turnInProgress || logicalCube.asString() === SOLVED_STATE) {
+  if (autoMode || turnInProgress || cubeDestroyed || reassembling || logicalCube.asString() === SOLVED_STATE) {
     if (announce && logicalCube.asString() === SOLVED_STATE) {
       setStatus('已经复原', 'solved');
       softBump(resetButton);
@@ -931,7 +1142,7 @@ function updateTimer(now = performance.now()) {
 }
 
 function updateControlsDisabled() {
-  const disabled = autoMode || turnInProgress;
+  const disabled = autoMode || turnInProgress || cubeDestroyed || reassembling;
   appEl.dataset.autoMode = String(autoMode);
   appEl.dataset.turning = String(turnInProgress);
   scrambleButton.disabled = disabled;
@@ -1146,14 +1357,15 @@ function scheduleMusicAhead() {
 
 function startBackgroundMusic() {
   if (!audioContext || !soundEnabled || musicTimer) return;
+  const targetLevel = cubeDestroyed ? 0.12 : 0.72;
   if (!musicMasterGain) {
     musicMasterGain = audioContext.createGain();
-    musicMasterGain.gain.value = 0.72;
+    musicMasterGain.gain.value = targetLevel;
     musicMasterGain.connect(audioContext.destination);
   } else {
     musicMasterGain.gain.cancelScheduledValues(audioContext.currentTime);
     musicMasterGain.gain.setValueAtTime(Math.max(musicMasterGain.gain.value, 0.0001), audioContext.currentTime);
-    musicMasterGain.gain.exponentialRampToValueAtTime(0.72, audioContext.currentTime + 0.22);
+    musicMasterGain.gain.exponentialRampToValueAtTime(targetLevel, audioContext.currentTime + 0.22);
   }
   musicNextStepTime = audioContext.currentTime + 0.06;
   scheduleMusicAhead();
@@ -1287,6 +1499,147 @@ function playCelebrationSound() {
   });
 }
 
+function duckMusicForExplosion(ctx) {
+  if (!musicMasterGain) return;
+  const now = ctx.currentTime;
+  musicMasterGain.gain.cancelScheduledValues(now);
+  musicMasterGain.gain.setValueAtTime(Math.max(musicMasterGain.gain.value, 0.0001), now);
+  musicMasterGain.gain.exponentialRampToValueAtTime(0.035, now + 0.11);
+  musicMasterGain.gain.exponentialRampToValueAtTime(0.12, now + 1.2);
+}
+
+function restoreMusicLevel() {
+  if (!audioContext || !musicMasterGain || !soundEnabled) return;
+  const now = audioContext.currentTime;
+  musicMasterGain.gain.cancelScheduledValues(now);
+  musicMasterGain.gain.setValueAtTime(Math.max(musicMasterGain.gain.value, 0.0001), now);
+  musicMasterGain.gain.exponentialRampToValueAtTime(0.72, now + 0.9);
+}
+
+function playCubeExplosionSound() {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const now = ctx.currentTime + 0.085;
+  duckMusicForExplosion(ctx);
+
+  const impact = ctx.createOscillator();
+  const impactFilter = ctx.createBiquadFilter();
+  const impactGain = ctx.createGain();
+  impact.type = 'sine';
+  impact.frequency.setValueAtTime(96, now);
+  impact.frequency.exponentialRampToValueAtTime(34, now + 0.42);
+  impactFilter.type = 'lowpass';
+  impactFilter.frequency.value = 240;
+  impactGain.gain.setValueAtTime(0.0001, now);
+  impactGain.gain.exponentialRampToValueAtTime(0.12, now + 0.012);
+  impactGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.52);
+  impact.connect(impactFilter);
+  impactFilter.connect(impactGain);
+  impactGain.connect(ctx.destination);
+  impact.start(now);
+  impact.stop(now + 0.54);
+
+  playNoiseBurst(ctx, {
+    start: now,
+    duration: 0.34,
+    volume: 0.075,
+    frequency: 680,
+    type: 'lowpass',
+  });
+
+  [0, 0.028, 0.064, 0.11, 0.17].forEach((offset, index) => {
+    playNoiseBurst(ctx, {
+      start: now + offset,
+      duration: 0.035 + index * 0.008,
+      volume: 0.025 - index * 0.0025,
+      frequency: 2600 + index * 720,
+      type: 'highpass',
+      pan: index % 2 === 0 ? -0.5 + index * 0.1 : 0.5 - index * 0.08,
+    });
+  });
+
+  [330, 440, 587.33, 783.99, 1046.5, 1396.91].forEach((frequency, index) => {
+    const start = now + 0.04 + index * 0.047 + Math.random() * 0.025;
+    const oscillator = ctx.createOscillator();
+    const resonator = ctx.createBiquadFilter();
+    const gain = ctx.createGain();
+    oscillator.type = index % 2 === 0 ? 'triangle' : 'sine';
+    oscillator.frequency.setValueAtTime(frequency * THREE.MathUtils.randFloat(0.94, 1.07), start);
+    oscillator.frequency.exponentialRampToValueAtTime(frequency * 0.72, start + 0.28);
+    resonator.type = 'bandpass';
+    resonator.frequency.value = frequency * 1.7;
+    resonator.Q.value = 3.2;
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.028 - index * 0.0022, start + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.3 + index * 0.018);
+    oscillator.connect(resonator);
+    resonator.connect(gain);
+    connectWithPan(ctx, gain, ctx.destination, index % 2 === 0 ? -0.62 + index * 0.08 : 0.58 - index * 0.06);
+    oscillator.start(start);
+    oscillator.stop(start + 0.42);
+  });
+}
+
+function playReassemblySound() {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  [261.63, 329.63, 392, 523.25, 659.25].forEach((frequency, index) => {
+    const start = now + index * 0.12;
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    oscillator.type = index % 2 === 0 ? 'triangle' : 'sine';
+    oscillator.frequency.setValueAtTime(frequency * 0.84, start);
+    oscillator.frequency.exponentialRampToValueAtTime(frequency * 1.08, start + 0.18);
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.026, start + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.24);
+    oscillator.connect(gain);
+    connectWithPan(ctx, gain, ctx.destination, THREE.MathUtils.lerp(-0.45, 0.45, index / 4));
+    oscillator.start(start);
+    oscillator.stop(start + 0.26);
+    playNoiseBurst(ctx, {
+      start: start + 0.075,
+      duration: 0.018,
+      volume: 0.007,
+      frequency: 3900 + index * 420,
+      type: 'highpass',
+      pan: THREE.MathUtils.lerp(-0.4, 0.4, index / 4),
+    });
+  });
+}
+
+function playDebrisImpactSound(pan, energy) {
+  if (!audioContext || !soundEnabled || audioContext.state !== 'running') return;
+  const ctx = audioContext;
+  const now = ctx.currentTime;
+  const strength = THREE.MathUtils.clamp(energy / 5, 0.35, 1);
+  const oscillator = ctx.createOscillator();
+  const filter = ctx.createBiquadFilter();
+  const gain = ctx.createGain();
+  oscillator.type = 'triangle';
+  oscillator.frequency.setValueAtTime(THREE.MathUtils.randFloat(520, 920), now);
+  oscillator.frequency.exponentialRampToValueAtTime(THREE.MathUtils.randFloat(280, 420), now + 0.07);
+  filter.type = 'bandpass';
+  filter.frequency.value = 1200;
+  filter.Q.value = 1.8;
+  gain.gain.setValueAtTime(0.016 * strength, now);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.085);
+  oscillator.connect(filter);
+  filter.connect(gain);
+  connectWithPan(ctx, gain, ctx.destination, pan);
+  oscillator.start(now);
+  oscillator.stop(now + 0.09);
+  playNoiseBurst(ctx, {
+    start: now,
+    duration: 0.025,
+    volume: 0.0065 * strength,
+    frequency: 3400,
+    type: 'highpass',
+    pan,
+  });
+}
+
 function softBump(element) {
   element.animate(
     [
@@ -1319,6 +1672,7 @@ function celebrate() {
 
 scrambleButton.addEventListener('click', scrambleCube);
 resetButton.addEventListener('click', () => resetCube(true));
+rebuildButton.addEventListener('click', reassembleCube);
 hintButton.addEventListener('click', () => {
   ensureAudio();
   setHintEnabled(!hintEnabled);
@@ -1343,7 +1697,7 @@ soundButton.addEventListener('click', () => {
   soundButton.setAttribute('aria-label', label);
   soundButton.setAttribute('title', label);
   soundButton.innerHTML = `<i data-lucide="${soundEnabled ? 'volume-2' : 'volume-x'}"></i>`;
-  createIcons({ icons: { Volume2, VolumeX } });
+  createIcons({ icons: ICONS });
   if (soundEnabled) {
     ensureAudio();
     playSnapSound({ axis: 'y', layer: 1, direction: -1 }, 'manual');
@@ -1360,22 +1714,32 @@ window.addEventListener('resize', () => {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 });
 
-function updateEffects() {
+function updateEffects(delta) {
   for (let i = effectObjects.length - 1; i >= 0; i -= 1) {
     const effect = effectObjects[i];
-    effect.userData.life -= 0.035;
-    if (effect.geometry === sparkGeometry) {
-      effect.position.add(effect.userData.velocity);
-      effect.userData.velocity.y -= 0.0008;
-      effect.rotation.x += 0.08;
-      effect.rotation.y += 0.06;
+    const frameScale = delta * 60;
+    effect.userData.life -= (effect.userData.decay ?? 2.1) * delta;
+    if (effect.userData.kind === 'spark') {
+      effect.position.addScaledVector(effect.userData.velocity, frameScale);
+      effect.userData.velocity.y -= 0.0008 * frameScale;
+      effect.rotation.x += 0.08 * frameScale;
+      effect.rotation.y += 0.06 * frameScale;
+    } else if (effect.userData.kind === 'debris') {
+      effect.position.addScaledVector(effect.userData.velocity, delta);
+      effect.userData.velocity.y -= 5.8 * delta;
+      effect.rotation.x += effect.userData.angularVelocity.x * delta;
+      effect.rotation.y += effect.userData.angularVelocity.y * delta;
+      effect.rotation.z += effect.userData.angularVelocity.z * delta;
+    } else if (effect.userData.kind === 'shockwave') {
+      effect.scale.addScalar(effect.userData.growth * delta);
+      effect.rotation.z += 0.8 * delta;
     } else {
-      effect.scale.multiplyScalar(1.008);
+      effect.scale.multiplyScalar(Math.pow(1.008, frameScale));
     }
     effect.material.opacity = Math.max(effect.userData.life, 0);
     if (effect.userData.life <= 0) {
       cubeRoot.remove(effect);
-      if (effect.geometry !== sparkGeometry) {
+      if (effect.userData.disposable) {
         effect.geometry.dispose();
         effect.material.dispose();
       }
@@ -1384,18 +1748,84 @@ function updateEffects() {
   }
 }
 
+function updateDestroyedCubies(now, delta) {
+  if (reassembling) {
+    let finished = true;
+    const elapsed = (now - rebuildStartedAt) / 1000;
+    const duration = prefersReducedMotion ? 0.08 : 0.88;
+    cubies.forEach((cubie) => {
+      const data = cubie.userData.explosion;
+      const from = cubie.userData.rebuildFrom;
+      const progress = THREE.MathUtils.clamp((elapsed - from.delay) / duration, 0, 1);
+      if (progress < 1) finished = false;
+      const eased = 1 - Math.pow(1 - progress, 3);
+      cubie.position.lerpVectors(from.position, data.originPosition, eased);
+      cubie.quaternion.slerpQuaternions(from.quaternion, data.originQuaternion, eased);
+      const settle = progress < 0.82 ? 1 : 1 + Math.sin((progress - 0.82) / 0.18 * Math.PI) * 0.055;
+      cubie.scale.setScalar(settle);
+    });
+    if (finished) finishReassembly();
+    return;
+  }
+
+  if (!cubeDestroyed) return;
+  if (now < explosionStartedAt) {
+    const tension = THREE.MathUtils.clamp(1 - (explosionStartedAt - now) / 105, 0, 1);
+    cubeRoot.scale.setScalar(1 + Math.sin(tension * Math.PI) * 0.035);
+    return;
+  }
+
+  cubeRoot.scale.setScalar(1);
+  const elapsed = (now - explosionStartedAt) / 1000;
+  cubies.forEach((cubie) => {
+    const data = cubie.userData.explosion;
+    if (elapsed < data.delay || data.settled) return;
+    data.launched = true;
+    cubie.position.addScaledVector(data.velocity, delta);
+    data.velocity.y -= 6.2 * delta;
+    data.velocity.multiplyScalar(Math.pow(0.988, delta * 60));
+    cubie.rotateX(data.angularVelocity.x * delta);
+    cubie.rotateY(data.angularVelocity.y * delta);
+    cubie.rotateZ(data.angularVelocity.z * delta);
+    data.angularVelocity.multiplyScalar(Math.pow(0.992, delta * 60));
+
+    if (cubie.position.y < -1.5 && data.velocity.y < 0) {
+      const impactSpeed = Math.abs(data.velocity.y);
+      cubie.position.y = -1.5;
+      data.velocity.y *= -0.28;
+      data.velocity.x *= 0.76;
+      data.velocity.z *= 0.76;
+      data.angularVelocity.multiplyScalar(0.78);
+      if (explosionImpactBudget > 0 && impactSpeed > 2) {
+        explosionImpactBudget -= 1;
+        playDebrisImpactSound(THREE.MathUtils.clamp(cubie.position.x / 5, -0.75, 0.75), impactSpeed);
+      }
+    }
+
+    if (elapsed > 4.8 || (cubie.position.y <= -1.49 && data.velocity.lengthSq() < 0.1)) {
+      data.settled = true;
+    }
+  });
+}
+
 function animate(now) {
   requestAnimationFrame(animate);
+  const delta = Math.min(Math.max((now - lastFrameTime) / 1000, 0), 0.034);
+  lastFrameTime = now;
   controls.update();
   if (hintGuide.visible && currentHintMove) {
     hintSpinner.rotation.z += currentHintMove.direction * (prefersReducedMotion ? 0 : 0.012);
   }
-  updateEffects();
+  updateEffects(delta);
+  updateDestroyedCubies(now, delta);
   updateTimer(now);
   renderer.render(scene, camera);
 }
 
 if (import.meta.env.DEV) {
+  window.addEventListener('keydown', (event) => {
+    if (event.shiftKey && event.code === 'KeyE') triggerCubeExplosion();
+  });
   Object.defineProperty(window, '__cubioTest', {
     configurable: true,
     value: {
@@ -1404,6 +1834,8 @@ if (import.meta.env.DEV) {
         if (!move || turnInProgress || autoMode) return Promise.resolve(false);
         return performMove({ ...move }, { record: true, trackState: true, duration: 45, source: 'manual' });
       },
+      explode: triggerCubeExplosion,
+      reassemble: reassembleCube,
     },
   });
 }
@@ -1417,6 +1849,7 @@ appEl.dataset.logicalSolved = 'true';
 appEl.dataset.exactSolved = 'true';
 appEl.dataset.lastMoveSource = 'none';
 appEl.dataset.music = 'waiting';
+appEl.dataset.destroyed = 'false';
 setHintEnabled(hintEnabled, false);
 ensureAudio();
 setTimeout(() => {
