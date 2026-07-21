@@ -335,6 +335,9 @@ let lastDebrisImpactSoundAt = -Infinity;
 const manualFrenzyMoves = [];
 const CUBIE_COLLISION_DISTANCE = 1.36;
 const EXPLOSION_FLOOR_Y = -1.5;
+const FRENZY_WINDOW_MS = 3600;
+const FRENZY_MIN_MOVES = 9;
+const FRENZY_TRIGGER_MS = 3000;
 
 function setPointerFromEvent(event) {
   const rect = renderer.domElement.getBoundingClientRect();
@@ -821,7 +824,7 @@ function recordManualFrenzy(move, now = performance.now()) {
     direction: move.direction,
   });
 
-  while (manualFrenzyMoves.length && now - manualFrenzyMoves[0].time > 2600) {
+  while (manualFrenzyMoves.length && now - manualFrenzyMoves[0].time > FRENZY_WINDOW_MS) {
     manualFrenzyMoves.shift();
   }
 
@@ -833,7 +836,7 @@ function recordManualFrenzy(move, now = performance.now()) {
     sequenceStart -= 1;
   }
   const sequence = manualFrenzyMoves.slice(sequenceStart);
-  if (sequence.length < 7 || now - sequence[0].time < 2000) return false;
+  if (sequence.length < FRENZY_MIN_MOVES || now - sequence[0].time < FRENZY_TRIGGER_MS) return false;
 
   const axes = new Set(sequence.map((item) => item.axis));
   const faces = new Set(sequence.map((item) => `${item.axis}:${item.layer}`));
