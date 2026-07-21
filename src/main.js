@@ -335,9 +335,9 @@ let lastDebrisImpactSoundAt = -Infinity;
 const manualFrenzyMoves = [];
 const CUBIE_COLLISION_DISTANCE = 1.36;
 const EXPLOSION_FLOOR_Y = -1.5;
-const FRENZY_WINDOW_MS = 3600;
-const FRENZY_MIN_MOVES = 9;
-const FRENZY_TRIGGER_MS = 3000;
+const FRENZY_WINDOW_MS = 4600;
+const FRENZY_MIN_MOVES = 11;
+const FRENZY_TRIGGER_MS = 4000;
 
 function setPointerFromEvent(event) {
   const rect = renderer.domElement.getBoundingClientRect();
